@@ -10,3 +10,4 @@ TODO:
 - Accept commands while the websocket client is running
 - Include a search for YouTube videos, at the moment I can only paste whole youtube links
 - The initial HELLO payload has a client-key hardcoded in there to avoid my TV's request for pairing every time. I will be moving this to SQLite
+- Modularize

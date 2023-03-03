@@ -1,6 +1,7 @@
-use clap::Parser;
+use axum::{http::StatusCode, routing::patch, Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::net::SocketAddr;
 use std::net::TcpStream;
 use tungstenite::protocol::WebSocket;
 use tungstenite::stream::MaybeTlsStream;
@@ -13,40 +14,55 @@ struct Response {
     command_type: String,
 }
 
-#[derive(Parser)]
-struct Args {
-    #[arg(short, long)]
-    yt_link: String,
+#[derive(Deserialize)]
+struct YouTube {
+    link: String,
 }
 
-fn main() {
-    let args = Args::parse();
+const WS_SERVER: &str = "ws://192.168.1.6:3000";
 
-    let (mut socket, _response) =
-        connect(Url::parse("ws://192.168.1.6:3000").unwrap()).expect("Cannot connect");
+#[tokio::main]
+async fn main() {
+    let app = Router::new().route("/services/youtube", patch(play_youtube_video));
 
-    println!("Connected");
+    let addr = SocketAddr::from(([127, 0, 0, 1], 9090));
 
+    axum::Server::bind(&addr)
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
+}
+
+async fn play_youtube_video(Json(payload): Json<YouTube>) -> (StatusCode, Json<u8>) {
+    let (mut socket, _response) = connect(Url::parse(WS_SERVER).unwrap()).expect("Cannot connect");
     socket.write_message(Message::Text(HELLO.into())).unwrap();
 
     loop {
         let raw_msg = socket.read_message().expect("Error reading message");
 
         if let Ok(msg) = serde_json::from_str(raw_msg.to_text().unwrap()) {
-            handle_message(msg, &mut socket, &args);
+            if handle_message(msg, &mut socket, &payload).await == StatusCode::OK {
+                break;
+            }
         }
     }
+
+    (StatusCode::OK, Json(0))
 }
 
-fn handle_message(msg: Response, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, args: &Args) {
+async fn handle_message(
+    msg: Response,
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    payload: &YouTube,
+) -> StatusCode {
     match msg.command_type.as_str() {
-        "registered" => open_yt(socket, args),
-
+        "registered" => open_yt(socket, payload),
         _ => println!("Received {:?}", msg),
     }
+    StatusCode::OK
 }
 
-fn open_yt(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, args: &Args) {
+fn open_yt(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, payload: &YouTube) {
     let payload: Value = json!({
         "type": "request",
         "id": "youtube_1",
@@ -54,7 +70,7 @@ fn open_yt(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, args: &Args) {
         "payload": {
             "id": "youtube.leanback.v4",
             "params": {
-                "contentTarget": args.yt_link
+                "contentTarget": payload.link
             }
         }
     });
