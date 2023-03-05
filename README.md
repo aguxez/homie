@@ -7,7 +7,7 @@ videos through the WS that my TV exposes in my local network.
 TODO:
 
 - Do not hardcode the TV IP and issue an M-SEARCH (?) to find it in the local network
-- Accept commands while the websocket client is running
+- Accept API requests for commands that get relayed to the websocket
 - Include a search for YouTube videos, at the moment I can only paste whole youtube links
 - The initial HELLO payload has a client-key hardcoded in there to avoid my TV's request for pairing every time. I will be moving this to SQLite
 - Modularize
