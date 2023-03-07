@@ -1,109 +1,36 @@
-use axum::{extract::State, http::StatusCode, routing::patch, Json, Router};
-use futures::stream::SplitSink;
-use futures_util::{SinkExt, StreamExt};
-use serde::Deserialize;
-use serde_json::{json, Value};
+mod network;
+
+use futures::{SinkExt, StreamExt};
+use network::{server::Server, ws};
 use std::net::SocketAddr;
-use tokio::net::TcpStream;
-use tokio::sync::mpsc::{channel, Sender};
-use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
-use url::Url;
-
-#[derive(Deserialize, Debug)]
-struct Response {
-    #[serde(rename = "type")]
-    command_type: String,
-}
-
-#[derive(Deserialize, Debug)]
-struct YouTube {
-    video_id: String,
-}
-
-const WS_SERVER: &str = "ws://192.168.1.6:3000";
+use tokio::sync::mpsc::channel;
+use tokio_tungstenite::tungstenite::Message;
 
 #[tokio::main]
 async fn main() {
-    let (ws_stream, _) = connect_async(Url::parse(WS_SERVER).unwrap())
-        .await
-        .expect("Cannot connect");
+    let ws_stream = ws::connect_async().await;
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     ws_tx.send(Message::Text(HELLO.into())).await.unwrap();
 
-    let (tx, mut rx) = channel::<YouTube>(1);
+    let (tx, mut rx) = channel::<ws::YouTube>(1);
     let serve_from = SocketAddr::from(([127, 0, 0, 1], 9090));
-    let app = Router::new()
-        .route("/services/youtube", patch(play_youtube_video))
-        .with_state(tx.clone());
+    let server = Server::new(tx, serve_from);
 
     tokio::spawn(async move {
         loop {
             if let Some(chan_msg) = rx.recv().await {
-                open_yt(&mut ws_tx, &chan_msg).await;
+                ws::open_yt(&mut ws_tx, &chan_msg).await;
             }
         }
     });
 
     tokio::spawn(async move {
-        loop {
-            if let Ok(raw_msg) = ws_rx.next().await.unwrap() {
-                handle_socket_msg(raw_msg);
-            }
-        }
+        ws::wait_msg(&mut ws_rx).await;
     });
 
-    axum::Server::bind(&serve_from)
-        .serve(app.into_make_service())
-        .await
-        .unwrap();
-}
-
-// TODO: Actually handle something
-fn handle_socket_msg(raw_msg: Message) {
-    if let Ok(msg) = serde_json::from_str::<Response>(raw_msg.to_text().unwrap()) {
-        println!("Received socket response: {:?}", msg.command_type);
-    }
-}
-
-async fn play_youtube_video(
-    State(tx): State<Sender<YouTube>>,
-    Json(payload): Json<YouTube>,
-) -> (StatusCode, Json<u8>) {
-    match tx.send(payload).await {
-        Ok(_) => (StatusCode::OK, Json(0)),
-        Err(err) => {
-            println!("Receiver send error: {:?}", err);
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(1))
-        }
-    }
-}
-
-async fn open_yt(
-    ws_tx: &mut SplitSink<WebSocketStream<MaybeTlsStream<TcpStream>>, Message>,
-    payload: &YouTube,
-) {
-    let link = format!(
-        "https://youtube.com/watch?v={video_id}",
-        video_id = payload.video_id
-    );
-
-    let payload: Value = json!({
-        "type": "request",
-        "id": "youtube_1",
-        "uri": "ssap://system.launcher/launch",
-        "payload": {
-            "id": "youtube.leanback.v4",
-            "params": { "contentTarget": link }
-        }
-    });
-
-    ws_tx
-        .send(Message::Text(payload.to_string()))
-        .await
-        .unwrap();
+    server.bind().await;
 }
 
 static HELLO: &str = r##"
