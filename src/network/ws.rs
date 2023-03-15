@@ -1,3 +1,6 @@
+use crate::db::conn::Pool;
+use crate::key;
+
 use futures::stream::{SplitSink, SplitStream};
 use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
@@ -22,6 +25,12 @@ pub struct YouTube {
     video_id: String,
 }
 
+#[derive(Deserialize)]
+struct Pairing {
+    #[serde(rename = "client-key")]
+    key: String,
+}
+
 pub async fn connect_async() -> WebSocketStream<MaybeTlsStream<TcpStream>> {
     let (ws_stream, _) = tokio_tungstenite::connect_async(Url::parse(WS_SERVER).unwrap())
         .await
@@ -29,22 +38,25 @@ pub async fn connect_async() -> WebSocketStream<MaybeTlsStream<TcpStream>> {
     ws_stream
 }
 
-pub async fn wait_msg(ws_rx: &mut SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>) {
+pub async fn wait_msg(
+    ws_rx: &mut SplitStream<WebSocketStream<MaybeTlsStream<TcpStream>>>,
+    pool: &mut Pool,
+) {
     loop {
         if let Some(Ok(raw_msg)) = ws_rx.next().await {
             if let Ok(msg) = serde_json::from_str::<Response>(raw_msg.to_text().unwrap()) {
-                handle_socket_msg(msg);
+                handle_socket_msg(msg, pool);
             }
         }
     }
 }
 
-fn handle_socket_msg(msg: Response) {
+fn handle_socket_msg(msg: Response, pool: &mut Pool) {
     match (msg.command_type.as_str(), msg.command_id.as_str()) {
         ("response", "register_0") => println!("Please accept pairing request in your TV"),
         ("registered", "register_0") => {
-            // TODO: Save in SQLite
-            println!("client-key: {:?}", msg.payload["client-key"]);
+            let pairing: Pairing = serde_json::from_value(msg.payload).unwrap();
+            key::insert_key(pairing.key, pool).unwrap();
         }
         _ => println!("Unhandled message: {:?}", msg),
     }
